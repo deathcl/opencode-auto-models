@@ -28,14 +28,14 @@ Añade el paquete a tu `opencode.jsonc` global (`~/.config/opencode/opencode.jso
 
 ```jsonc
 {
-  "plugins": ["@deathcl/opencode-auto-models"]
+  "plugins": ["@danwad/opencode-auto-models"]
 }
 ```
 
 o con el CLI:
 
 ```sh
-opencode plugin add @deathcl/opencode-auto-models
+opencode plugin add @danwad/opencode-auto-models
 ```
 
 Reinicia OpenCode y listo.

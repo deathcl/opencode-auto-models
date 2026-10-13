@@ -1,5 +1,5 @@
 {
-  "name": "@deathcl/opencode-auto-models",
+  "name": "@danwad/opencode-auto-models",
   "version": "1.0.0",
   "description": "OpenCode plugin: descubre automaticamente los modelos nuevos de tus gateways OpenAI-compatibles y los sincroniza con tu opencode.jsonc. Comandos /sync-models y /prune-models.",
   "type": "module",
