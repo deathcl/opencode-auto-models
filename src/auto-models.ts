@@ -8,10 +8,19 @@ import { join } from "node:path"
 // GET {baseURL}/models y añade al mapa providers.<id>.models los IDs
 // nuevos sin tocar los existentes. Corre cada 5 minutos y con /sync-models.
 // Solo añade, nunca borra: tus límites y claves del jsonc mandan.
+//
+// Imagen y video: algunos gateways exponen modelos (imagen/video) que NO
+// salen en GET /models. Para esos se consultan fuentes extra:
+//   - settings.modelsExtraUrl (string o lista), declarable por provider.
+//   - Autodetección de NaraRouter: si el host es *.bynara.id, se usa
+//     {origin}/api/pricing, que sí lista imagen/video con sus capacidades.
+// Con eso /sync-models los añade y /prune-models NO los borra.
+//
 // /prune-models (manual) elimina los modelos que ya no expone el gateway
 // (añadidos por sync O escritos a mano) y los guarda antes en
 // pruned-models.json con su entrada intacta del jsonc, para poder
-// restaurarlos con copiar y pegar.
+// restaurarlos con copiar y pegar. Si el gateway o una fuente extra falla,
+// ese provider no se poda.
 // El servidor recarga la config automáticamente al detectar el cambio.
 
 const INTERVAL_MS = 5 * 60 * 1000
@@ -112,37 +121,139 @@ function resolveKey(raw: unknown): string | undefined {
   return raw
 }
 
-async function fetchModels(baseURL: string, apiKey?: string): Promise<any[]> {
+async function fetchJson(url: string, apiKey?: string): Promise<any> {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
   try {
     const headers: Record<string, string> = {}
     if (apiKey) headers.authorization = `Bearer ${apiKey}`
-    const res = await fetch(baseURL.replace(/\/+$/, "") + "/models", { headers, signal: ctrl.signal })
+    const res = await fetch(url, { headers, signal: ctrl.signal })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const json: any = await res.json()
-    const list = Array.isArray(json) ? json : (json?.data ?? json?.models ?? [])
-    return Array.isArray(list) ? list : []
+    return await res.json()
   } finally {
     clearTimeout(timer)
   }
 }
 
-function configEntry(m: any): any {
+// Fuentes extra por provider: gateways que exponen modelos (imagen/video)
+// que NO aparecen en GET /models. Se declaran con settings.modelsExtraUrl
+// (string o lista) y, si el host es NaraRouter, se autodetecta /api/pricing.
+export function extraModelUrls(p: any, baseURL: string): string[] {
+  const urls: string[] = []
+  const declared = p?.settings?.modelsExtraUrl ?? p?.modelsExtraUrl
+  if (typeof declared === "string" && declared) urls.push(declared)
+  else if (Array.isArray(declared)) for (const u of declared) if (typeof u === "string" && u) urls.push(u)
+  try {
+    const parsed = new URL(baseURL)
+    if (/(^|\.)bynara\.id$/i.test(parsed.hostname)) urls.push(parsed.origin + "/api/pricing")
+  } catch {
+    // baseURL no parseable: sin autodetección
+  }
+  return [...new Set(urls)]
+}
+
+// Registro unificado de un modelo, con las capacidades que sí sabemos
+// distinguir: texto, imagen (entrada/salida) y video.
+export type ModelInfo = {
+  id: string
+  name?: string
+  context?: number
+  output?: number
+  vision?: boolean
+  image?: boolean
+  video?: boolean
+}
+
+// Forma OpenAI-compatible: { data: [{ id, name?, context_window?, vision? }] }
+function infoFromOpenAI(m: any): ModelInfo | undefined {
   const id = typeof m === "string" ? m : m?.id
-  const entry: any = {
-    name: typeof m?.name === "string" && m.name ? m.name : id,
-    limit: { context: 200000, output: 32768 },
-    capabilities: { tools: true, input: ["text"], output: ["text"] },
+  if (typeof id !== "string" || !id) return undefined
+  const info: ModelInfo = { id }
+  if (typeof m?.name === "string" && m.name) info.name = m.name
+  if (typeof m?.context_window === "number" && m.context_window > 0) info.context = m.context_window
+  if (typeof m?.max_output_tokens === "number" && m.max_output_tokens > 0) info.output = m.max_output_tokens
+  if (m?.vision === true) info.vision = true
+  return info
+}
+
+// Forma NaraRouter (/api/pricing): alias, display_name, max_context_tokens
+// y banderas supports_vision / supports_image_generation / supports_video_generation.
+function infoFromPricing(m: any): ModelInfo | undefined {
+  const id = typeof m?.alias === "string" && m.alias ? m.alias : typeof m?.id === "string" ? m.id : undefined
+  if (!id) return undefined
+  const info: ModelInfo = { id }
+  if (typeof m?.display_name === "string" && m.display_name) info.name = m.display_name
+  else if (typeof m?.name === "string" && m.name) info.name = m.name
+  if (typeof m?.max_context_tokens === "number" && m.max_context_tokens > 0) info.context = m.max_context_tokens
+  if (m?.supports_vision === true) info.vision = true
+  if (m?.supports_image_generation === true) info.image = true
+  if (m?.supports_video_generation === true) info.video = true
+  return info
+}
+
+export function normalizeModels(raw: any): ModelInfo[] {
+  const list = Array.isArray(raw) ? raw : (raw?.data ?? raw?.models ?? [])
+  if (!Array.isArray(list)) return []
+  const out: ModelInfo[] = []
+  for (const m of list) {
+    const isPricing = !!m && typeof m === "object" && ("alias" in m || "supports_image_generation" in m)
+    const info = isPricing ? infoFromPricing(m) : infoFromOpenAI(m)
+    if (info) out.push(info)
   }
-  if (typeof m?.context_window === "number" && m.context_window > 0) {
-    entry.limit.context = m.context_window
+  return out
+}
+
+export function configEntry(info: ModelInfo): any {
+  const input = ["text"]
+  if (info.vision) input.push("image")
+  const output = ["text"]
+  if (info.image) output.push("image")
+  if (info.video) output.push("video")
+  return {
+    name: info.name || info.id,
+    limit: { context: info.context ?? 200000, output: info.output ?? 32768 },
+    capabilities: { tools: true, input, output },
   }
-  if (typeof m?.max_output_tokens === "number" && m.max_output_tokens > 0) {
-    entry.limit.output = m.max_output_tokens
+}
+
+// Fusiona dos vistas del mismo modelo: gana el dato del primario y se
+// acumulan las capacidades (un modelo puede salir en /models Y en la fuente
+// extra, cada una sabiendo cosas distintas).
+function mergeInfo(a: ModelInfo, b: ModelInfo): ModelInfo {
+  return {
+    id: a.id,
+    name: a.name ?? b.name,
+    context: a.context ?? b.context,
+    output: a.output ?? b.output,
+    vision: a.vision || b.vision,
+    image: a.image || b.image,
+    video: a.video || b.video,
   }
-  if (m?.vision === true) entry.capabilities.input = ["text", "image"]
-  return entry
+}
+
+// Reúne los modelos vivos de un provider: GET /models + fuentes extra.
+// "incomplete" = alguna fuente extra falló, así que prune no debe fiarse.
+export async function collectModels(
+  p: any,
+  baseURL: string,
+  apiKey?: string,
+): Promise<{ models: Map<string, ModelInfo>; incomplete: boolean }> {
+  const models = new Map<string, ModelInfo>()
+  const primary = await fetchJson(baseURL.replace(/\/+$/, "") + "/models", apiKey)
+  for (const info of normalizeModels(primary)) models.set(info.id, info)
+  let incomplete = false
+  for (const url of extraModelUrls(p, baseURL)) {
+    try {
+      for (const info of normalizeModels(await fetchJson(url, apiKey))) {
+        const previo = models.get(info.id)
+        models.set(info.id, previo ? mergeInfo(previo, info) : info)
+      }
+    } catch (e) {
+      incomplete = true
+      await dbg("extra:", url, "FALLO (se ignora):", String(e))
+    }
+  }
+  return { models, incomplete }
 }
 
 // Cementerio: providerID -> modelID -> entrada intacta tal como estaba
@@ -169,7 +280,7 @@ async function recordPruned(batch: Record<string, Record<string, any>>): Promise
   await writeFile(path, JSON.stringify(store, null, 2) + "\n", "utf8")
 }
 
-async function pruneFile(): Promise<void> {
+export async function pruneFile(): Promise<void> {
   const path = configPath()
   let cfg: any
   try {
@@ -190,19 +301,21 @@ async function pruneFile(): Promise<void> {
     const models = p?.models
     if (!models || typeof models !== "object" || Object.keys(models).length === 0) continue
     // Seguridad: solo podamos si el gateway respondió OK. Un fallo de
-    // red/auth nunca cuenta como "el proveedor sacó el modelo".
-    let raw: any[]
+    // red/auth nunca cuenta como "el proveedor sacó el modelo". Si una fuente
+    // extra (imagen/video) falla, tampoco se poda: borraría modelos que solo
+    // viven ahí.
+    let collected: { models: Map<string, ModelInfo>; incomplete: boolean }
     try {
-      raw = await fetchModels(baseURL, resolveKey(p?.settings?.apiKey))
+      collected = await collectModels(p, baseURL, resolveKey(p?.settings?.apiKey))
     } catch (e) {
       await dbg("prune:", pid, "fetch FALLO, no se poda este provider:", String(e))
       continue
     }
-    const live = new Set<string>()
-    for (const m of raw) {
-      const id = typeof m === "string" ? m : m?.id
-      if (typeof id === "string" && id) live.add(id)
+    if (collected.incomplete) {
+      await dbg("prune:", pid, "fuente extra FALLO, no se poda este provider")
+      continue
     }
+    const live = new Set<string>(collected.models.keys())
     const removed: Record<string, any> = {}
     for (const [mid, entry] of Object.entries(models)) {
       if (live.has(mid)) continue
@@ -230,7 +343,7 @@ async function pruneFile(): Promise<void> {
   }
 }
 
-async function syncFile(): Promise<void> {
+export async function syncFile(): Promise<void> {
   const path = configPath()
   let cfg: any
   try {
@@ -247,19 +360,18 @@ async function syncFile(): Promise<void> {
     if (typeof p?.package !== "string" || !p.package.includes("openai-compatible")) continue
     const baseURL = p?.settings?.baseURL
     if (typeof baseURL !== "string" || !baseURL) continue
-    let raw: any[]
+    let collected: { models: Map<string, ModelInfo>; incomplete: boolean }
     try {
-      raw = await fetchModels(baseURL, resolveKey(p?.settings?.apiKey))
+      collected = await collectModels(p, baseURL, resolveKey(p?.settings?.apiKey))
     } catch (e) {
       await dbg("jsonc:", pid, "fetch FALLO:", String(e))
       continue
     }
     p.models ??= {}
     let added = 0
-    for (const m of raw) {
-      const id = typeof m === "string" ? m : m?.id
-      if (typeof id !== "string" || !id || p.models[id]) continue
-      p.models[id] = configEntry(m)
+    for (const info of collected.models.values()) {
+      if (p.models[info.id]) continue
+      p.models[info.id] = configEntry(info)
       added++
     }
     if (added > 0) {

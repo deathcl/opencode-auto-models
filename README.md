@@ -8,14 +8,16 @@ Sin tocar archivos a mano: si el proveedor agrega un modelo, aparece solo.
 
 - Lee cada provider de tu config cuyo `package` sea `@opencode/ai/providers/openai-compatible`.
 - Sondea `GET {baseURL}/models` (con Bearer si hay apiKey, acepta la forma `{env:VARIABLE}`).
+- Además consulta **fuentes extra** para los modelos que no salen en `/models` (típicamente imagen y video): `settings.modelsExtraUrl` (string o lista) y autodetección de NaraRouter (`{origin}/api/pricing`). Si una fuente extra falla, se ignora sin romper el ciclo.
 - Añade al mapa `providers.<id>.models` **solo los IDs nuevos**; nunca borra ni sobrescribe lo tuyo.
-- Por modelo nuevo toma `context_window` y `max_output_tokens` del endpoint (si vienen) y activa visión si `vision: true`. Por defecto: 200k contexto / 32k output.
+- Por modelo nuevo toma `context_window` y `max_output_tokens` del endpoint (si vienen). Marca visión (`input: image`) y generación de imagen/video (`output: image`/`output: video`) según lo que reporte la fuente. Por defecto: 200k contexto / 32k output.
 - Corre cada 5 minutos y bajo demanda con el comando `/sync-models`.
 - `/prune-models` (manual, nunca automático): elimina del jsonc los modelos que
   el gateway ya no expone (añadidos por sync O escritos a mano). Antes de
   borrarlos los archiva en `~/.config/opencode/pruned-models.json` con la
   entrada intacta tal como estaba en el jsonc — restaurar es copiar y pegar.
-  Si un gateway falla (red/auth), ese provider no se poda.
+  Si un gateway falla (red/auth) o falla una fuente extra (imagen/video), ese
+  provider no se poda.
 - Hace backup del jsonc antes de escribir (`opencode.jsonc.autosync.backup`).
 - El servidor de OpenCode recarga la config sola; los modelos aparecen en `/models` al momento.
 - Log de diagnóstico en `~/.config/opencode/auto-models-debug.log`.
@@ -87,6 +89,10 @@ Reinicia OpenCode y listo.
 ## Notas
 
 - Solo toca el jsonc global (`~/.config/opencode/opencode.jsonc`), no configs de proyecto.
+- Sync es **solo-añadir**: si un modelo ya está en tu jsonc, no se le tocan nombre,
+  límites ni capacidades. Así que un modelo viejo con capacidades incompletas
+  (p. ej. un video marcado solo como texto) no se corrige solo; edítalo a mano
+  o bórralo y deja que sync lo vuelva a añadir.
 - Convierte el jsonc a JSON estándar al escribir (los comentarios se pierden
   en la primera escritura; siempre deja backup).
 - Los toggles de enable/disable de la app de escritorio son independientes:

@@ -1,12 +1,13 @@
 {
   "name": "@danwad/opencode-auto-models",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "OpenCode plugin: descubre automaticamente los modelos nuevos de tus gateways OpenAI-compatibles y los sincroniza con tu opencode.jsonc. Comandos /sync-models y /prune-models.",
   "type": "module",
   "main": "./dist/auto-models.js",
   "types": "./dist/auto-models.d.ts",
   "files": [
     "dist",
+    "src",
     "install.ps1"
   ],
   "scripts": {

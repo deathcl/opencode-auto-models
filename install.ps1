@@ -5,10 +5,10 @@ $ErrorActionPreference = "Stop"
 
 $destDir = Join-Path $env:USERPROFILE ".config\opencode\plugins"
 $dest = Join-Path $destDir "auto-models.ts"
-$src = Join-Path $PSScriptRoot "auto-models.ts"
+$src = Join-Path $PSScriptRoot "src\auto-models.ts"
 
 if (-not (Test-Path $src)) {
-  Write-Error "No encuentro auto-models.ts junto a install.ps1"
+  Write-Error "No encuentro src\auto-models.ts junto a install.ps1"
 }
 
 New-Item -ItemType Directory -Force -Path $destDir | Out-Null
